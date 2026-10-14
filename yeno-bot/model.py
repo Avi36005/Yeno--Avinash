@@ -23,6 +23,7 @@ HISTORY_SECONDS = 1200.0
 BASIS_ALPHA = 0.35
 MODEL_NOISE_USD = 3.5  # TWAP replication error measured on 863 settled markets
 UNKNOWN_BASIS_NOISE_USD = 25.0
+ROUGH_BASIS_NOISE_USD = 12.0  # basis from a partial pre-open window or first post-open mid
 
 # Fat-tailed standardized mixture: weights, scale. Total variance ~= 1.
 _MIX = ((0.8, 0.8), (0.2, 1.6))
@@ -44,7 +45,8 @@ class FairValue:
         self._vol_t: float | None = None
         self._vol_mid: float | None = None
         self.basis = 0.0
-        self.basis_count = 0
+        self.basis_count = 0  # precise samples (full pre-open TWAP window)
+        self.rough_count = 0  # fallback samples
         self._basis_markets: set[float] = set()
 
     # ---- observations -------------------------------------------------
@@ -123,20 +125,41 @@ class FairValue:
             return
         a, b = start - TWAP_SECONDS - TWAP_END_OFFSET, start - TWAP_END_OFFSET
         total, covered = self.integral(a, b)
-        if covered < 0.8 * TWAP_SECONDS:
-            return
-        self._basis_markets.add(start)
-        sample = open_target - total / covered
-        if self.basis_count == 0:
-            self.basis = sample
-        else:
-            # Reject a wild sample (bad target row) once a basis is known.
-            if abs(sample - self.basis) > 60:
-                return
-            self.basis += BASIS_ALPHA * (sample - self.basis)
-        self.basis_count += 1
+        if covered >= 0.8 * TWAP_SECONDS:
+            self._basis_markets.add(start)
+            self._update_basis(open_target - total / covered, precise=True)
+        elif self.basis_count == 0:
+            # Fallback: partial window, else first mid observed after the open.
+            if covered >= 5.0:
+                sample = open_target - total / covered
+            else:
+                after = [m for t, m in self.hist if start <= t <= start + 30]
+                if not after:
+                    return
+                sample = open_target - after[0]
+            self._basis_markets.add(start)
+            self._update_basis(sample, precise=False)
         if len(self._basis_markets) > 64:
             self._basis_markets = set(sorted(self._basis_markets)[-32:])
+
+    def _update_basis(self, sample: float, precise: bool) -> None:
+        known = self.basis_count + self.rough_count
+        if known == 0:
+            self.basis = sample
+        elif self.basis_count == 0 and precise:
+            self.basis = sample  # first precise sample replaces rough estimates
+        else:
+            if abs(sample - self.basis) > 60:
+                return  # reject a wild sample (bad target row)
+            self.basis += (BASIS_ALPHA if precise else 0.2) * (sample - self.basis)
+        if precise:
+            self.basis_count += 1
+        else:
+            self.rough_count += 1
+
+    @property
+    def basis_known(self) -> bool:
+        return self.basis_count + self.rough_count > 0
 
     # ---- prediction ---------------------------------------------------
     def settle_distribution(self, now: float, end: float) -> tuple[float, float] | None:
@@ -160,7 +183,12 @@ class FairValue:
         else:
             mean = mid_now
             var = sigma ** 2 * ((ws - now) + TWAP_SECONDS / 3.0)
-        noise = MODEL_NOISE_USD if self.basis_count else UNKNOWN_BASIS_NOISE_USD
+        if self.basis_count:
+            noise = MODEL_NOISE_USD
+        elif self.rough_count:
+            noise = ROUGH_BASIS_NOISE_USD
+        else:
+            noise = UNKNOWN_BASIS_NOISE_USD
         return mean + self.basis, math.sqrt(var + noise ** 2)
 
     def prob_yes(self, now: float, end: float, open_target: float):
