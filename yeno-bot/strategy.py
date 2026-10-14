@@ -36,6 +36,8 @@ DEFAULT_PARAMS: dict[str, float] = {
     "min_entry_price": 0.30,
     "max_entry_price": 0.97,
     "min_fair": 0.55,
+    # weight of the TWAP model vs the book mid (logit blend); 1 = model only
+    "model_weight": 0.6,
     # exit: sell when bid >= fair - hold_margin
     "hold_margin": 0.006,
     "forced_exit_s": 9.0,
@@ -58,6 +60,11 @@ def _levels(rows: Any, reverse: bool) -> list[tuple[float, float]]:
             out.append((p, q))
     out.sort(reverse=reverse)
     return out
+
+
+def _logit(p: float) -> float:
+    p = min(1 - 1e-6, max(1e-6, p))
+    return math.log(p / (1 - p))
 
 
 def fees(fills: list[tuple[float, float]]) -> float:
@@ -189,12 +196,35 @@ class Strategy:
         fair_yes = None
         if target is not None:
             fair_yes, _, _ = self.fv.prob_yes(now, end, target)
+            if fair_yes is not None:
+                fair_yes = self._blend(fair_yes, books)
 
         if position is not None:
             return self._exit(position, books, seconds, fair_yes, ref_ok, market_id)
         if fair_yes is None or not ref_ok or not self.fv.basis_known:
             return {"action": "HOLD"}
         return self._entry(obs, books, seconds, fair_yes, now, account, rules)
+
+    def _blend(self, model_p: float, books: dict) -> float:
+        """Shrink the model toward the book: the market is informative too."""
+        w = self.p["model_weight"]
+        if w >= 1.0:
+            return model_p
+        mid = None
+        yes = books.get("YES", {})
+        no = books.get("NO", {})
+        yb, ya = _levels(yes.get("bids", []), True), _levels(yes.get("asks", []), False)
+        if yb and ya:
+            mid = (yb[0][0] + ya[0][0]) / 2.0
+        else:
+            nb, na = _levels(no.get("bids", []), True), _levels(no.get("asks", []), False)
+            if nb and na:
+                mid = 1.0 - (nb[0][0] + na[0][0]) / 2.0
+        if mid is None:
+            return model_p
+        lm = _logit(model_p)
+        lb = _logit(mid)
+        return 1.0 / (1.0 + math.exp(-(w * lm + (1.0 - w) * lb)))
 
     # ------------------------------------------------------------------
     def _exit(self, position, books, seconds, fair_yes, ref_ok, market_id):
