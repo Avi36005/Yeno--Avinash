@@ -87,9 +87,23 @@ def _init_rows():
     _ROWS = load_rows()
 
 
+def _halves(rows):
+    """Split recordings at the median timestamp (aligned to a market boundary)."""
+    ts = sorted(r["t"] for r in rows if "t" in r)
+    cut = ts[len(ts) // 2] // 300 * 300
+    return [r for r in rows if r.get("t", 0) < cut], [r for r in rows if r.get("t", 0) >= cut]
+
+
 def eval_replay_one(params: dict) -> dict:
+    out = _score(params, _ROWS)
+    for name, half in zip(("h1", "h2"), _halves(_ROWS)):
+        out[name] = _score(params, half)["per100"]
+    return out
+
+
+def _score(params: dict, rows) -> dict:
     from run_replay import replay
-    r, mk = replay("ours", params, "coinbase", None, {"min_order_override": 5.0}, rows=_ROWS)
+    r, mk = replay("ours", params, "coinbase", None, {"min_order_override": 5.0}, rows=rows)
     hours = max(r.hours, 1e-6)
     rate = r.volume / hours
     pnl = r.final_cash - 10.0

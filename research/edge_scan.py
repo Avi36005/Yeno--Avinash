@@ -18,13 +18,13 @@ for e in events:
     if e[0] != "book" or e[3] != "YES": continue
     t, slug = e[1], e[2]; m = markets[slug]
     fv.learn_basis(m["start"], m["open"])
+    if not fv.basis_known: continue
     bids, asks = e[4], e[5]
     if not bids or not asks: continue
     p, mean, sd = fv.prob_yes(t, m["end"], m["open"])
     if p is None: continue
     recs.append((t, m["end"]-t, p, bids[0][0], asks[0][0], 1.0 if m["close"]>=m["open"] else 0.0, fv.basis_count))
 r = np.array(recs)
-r = r[r[:,6] > 0]
 print("rows with basis", len(r), "basis", fv.basis)
 S, p, bid, ask, y = r[:,1], r[:,2], r[:,3], r[:,4], r[:,5]
 mid = (bid+ask)/2
