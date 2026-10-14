@@ -147,18 +147,20 @@ def generate(start: int, cfg: SynthCfg):
             noise = rho * noise + math.sqrt(1 - rho * rho) * rng.gauss(0, cfg.mm_noise)
             f = sigmoid(logit(f) + noise)
             ticks = 2 if rng.random() < cfg.two_tick_prob else 1
-            bid = math.floor((f - 0.005 * ticks) * 100 + 1e-9) / 100
-            ask = round(bid + 0.01 * ticks, 2)
+            # Polymarket tick: 0.001 outside [0.04, 0.96], else 0.01.
+            tick = 0.001 if (f > 0.96 or f < 0.04) else 0.01
+            bid = math.floor((f - tick * ticks / 2) / tick + 1e-9) * tick
+            ask = bid + tick * ticks
             yes_b, yes_a = [], []
             for i in range(cfg.levels):
-                pb = round(bid - 0.01 * i, 2)
-                pa = round(ask + 0.01 * i, 2)
-                if 0.01 <= pb <= 0.99:
+                pb = round(bid - tick * i, 3)
+                pa = round(ask + tick * i, 3)
+                if 0.001 <= pb <= 0.999:
                     yes_b.append([pb, round(cfg.depth_median * math.exp(rng.gauss(0, 0.8)), 2)])
-                if 0.01 <= pa <= 0.99:
+                if 0.001 <= pa <= 0.999:
                     yes_a.append([pa, round(cfg.depth_median * math.exp(rng.gauss(0, 0.8)), 2)])
-            no_b = [[round(1 - p, 2), q] for p, q in yes_a]
-            no_a = [[round(1 - p, 2), q] for p, q in yes_b]
+            no_b = [[round(1 - p, 3), q] for p, q in yes_a]
+            no_a = [[round(1 - p, 3), q] for p, q in yes_b]
             yield ("book", t, slug, "YES", yes_b, yes_a, cfg.mos)
             yield ("book", t, slug, "NO", no_b, no_a, cfg.mos)
 

@@ -287,7 +287,7 @@ class Strategy:
             shares, gross, buy_fee = plan
             if shares < max(mos, 0.01) * p["min_share_buffer"]:
                 continue
-            spread = max(TICK, asks[0][0] - bids[0][0])
+            spread = max(0.001, asks[0][0] - bids[0][0])
             exit_px = max(0.01, fair - spread / 2.0)
             exit_fee = TAKER_RATE * shares * exit_px * (1 - exit_px) + OVERLAY_RATE * shares * exit_px
             ev = shares * (exit_px - p["latency_cushion"]) - exit_fee - gross - buy_fee
