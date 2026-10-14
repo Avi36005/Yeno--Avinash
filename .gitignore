@@ -1,0 +1,9 @@
+# Downloaded challenge material and local captures (not ours to redistribute / too large)
+downloads/
+reference/
+starter-kit/
+research/data/
+research/results/
+__pycache__/
+*.pyc
+.DS_Store
