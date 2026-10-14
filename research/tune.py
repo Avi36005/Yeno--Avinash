@@ -39,6 +39,22 @@ SPACE = {
     "max_cycles_per_market": [1, 2, 4, 8],
 }
 
+CARRY_SPACE = {
+    "value_enabled": [0, 0, 1],
+    "carry_s_lo": [15, 20, 25, 30, 40],
+    "carry_s_hi": [60, 75, 90, 105, 120],
+    "carry_ask_lo": [0.75, 0.8, 0.85, 0.88],
+    "carry_ask_hi": [0.9, 0.92, 0.93, 0.95, 0.96],
+    "carry_ask_hi_behind": [0.95, 0.96, 0.97, 0.98],
+    "carry_min_model": [0.0, 0.5, 0.7, 0.8],
+    "carry_exit_bid": [0.98, 0.99, 0.995],
+    "carry_stop_model": [0.0, 0.3, 0.5],
+    "carry_stop_drop": [0.15, 0.25, 0.4, 1.0],
+    "max_cycles_per_market": [1, 2, 3],
+    "forced_exit_s": [3, 5, 8, 12],
+    "edge_base": [0.02, 0.03],
+}
+
 REGIMES = [
     {"mm_lag": 0.5, "mm_noise": 0.05},
     {"mm_lag": 1.0, "mm_noise": 0.06},
@@ -46,8 +62,8 @@ REGIMES = [
 ]
 
 
-def sample(rng: random.Random) -> dict:
-    return {k: rng.choice(v) for k, v in SPACE.items()}
+def sample(rng: random.Random, space=None) -> dict:
+    return {k: rng.choice(v) for k, v in (space or SPACE).items()}
 
 
 def eval_synth(params: dict, runs: int, hours: float) -> dict:
@@ -94,11 +110,13 @@ if __name__ == "__main__":
     ap.add_argument("--hours", type=float, default=24.0)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--include-default", action="store_true")
+    ap.add_argument("--space", choices=["full", "carry"], default="full")
     a = ap.parse_args()
     rng = random.Random(a.seed)
     (HERE / "results").mkdir(exist_ok=True)
-    path = HERE / "results" / f"tune-{a.mode}.jsonl"
-    trials = [sample(rng) for _ in range(a.trials)]
+    path = HERE / "results" / f"tune-{a.mode}-{a.space}.jsonl"
+    space = CARRY_SPACE if a.space == "carry" else SPACE
+    trials = [sample(rng, space) for _ in range(a.trials)]
     if a.include_default:
         trials.insert(0, {})
     if a.mode == "synth":

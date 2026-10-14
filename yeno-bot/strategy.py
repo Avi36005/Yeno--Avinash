@@ -53,6 +53,9 @@ DEFAULT_PARAMS: dict[str, float] = {
     "carry_ask_hi": 0.96,
     "carry_min_model": 0.80,  # model must agree the favorite is likely
     "carry_exit_bid": 0.99,
+    # when behind the volume schedule, accept favorites up to this ask
+    "carry_ask_hi_behind": 0.97,
+    "carry_behind_trigger": 0.05,
     "carry_stop_model": 0.70,  # bail out when the model turns
     "carry_stop_drop": 0.08,  # ...or when the bid falls this far below entry
 
@@ -147,6 +150,14 @@ class Strategy:
             return self._decide(obs)
         except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
             return {"action": "HOLD"}
+
+    def _behind(self, now: float, account: dict, rules: dict) -> float:
+        """Schedule shortfall as a fraction of the target (>0 = behind)."""
+        target = float(rules.get("targetVolumeUsd", 1000.0)) or 1000.0
+        window_h = float(rules.get("evaluationWindowHours", 24.0)) or 24.0
+        goal_h = min(self.p["pace_goal_hours"], window_h)
+        elapsed_h = max(0.0, (now - (self.first_seen or now)) / 3600.0)
+        return elapsed_h / goal_h - float(account.get("eligibleVolumeUsd", 0.0)) / target
 
     def _required_edge(self, now: float, account: dict, rules: dict) -> float:
         p = self.p
@@ -281,8 +292,9 @@ class Strategy:
             return {"action": "SELL"}
         return {"action": "HOLD"}
 
-    def _carry_entry(self, books, seconds, cap):
+    def _carry_entry(self, books, seconds, cap, behind=0.0):
         p = self.p
+        ask_hi = p["carry_ask_hi_behind"] if behind > p["carry_behind_trigger"] else p["carry_ask_hi"]
         if not (p["carry_s_lo"] <= seconds <= p["carry_s_hi"]) or self.model_yes is None:
             return None
         for side in ("YES", "NO"):
@@ -292,13 +304,13 @@ class Strategy:
             if not asks or not bids:
                 continue
             ask = asks[0][0]
-            if not (p["carry_ask_lo"] <= ask <= p["carry_ask_hi"]):
+            if not (p["carry_ask_lo"] <= ask <= ask_hi):
                 continue
             model = self.model_yes if side == "YES" else 1.0 - self.model_yes
             if model < p["carry_min_model"]:
                 continue
             mos = float(book.get("minOrderSize", 0) or 0)
-            plan = plan_buy(asks, cap, min(0.999, p["carry_ask_hi"] + 0.01))
+            plan = plan_buy(asks, cap, min(0.999, ask_hi + 0.01))
             if plan is None:
                 continue
             shares, gross, fee = plan
@@ -320,7 +332,8 @@ class Strategy:
         cap = math.floor(cap * 1e4) / 1e4 - 0.0005
         if cap <= 0.05:
             return {"action": "HOLD"}
-        carry = self._carry_entry(books, seconds, cap) if p["carry_enabled"] else None
+        behind = self._behind(now, account, rules)
+        carry = self._carry_entry(books, seconds, cap, behind) if p["carry_enabled"] else None
         if carry is not None:
             self.last_buy_at = now
             self.mode = "carry"
