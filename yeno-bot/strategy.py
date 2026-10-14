@@ -43,6 +43,19 @@ DEFAULT_PARAMS: dict[str, float] = {
     "forced_exit_s": 9.0,
     "max_ref_age_s": 1.5,
     "max_cycles_per_market": 6.0,
+    # value mode on/off (fair-value entries)
+    "value_enabled": 1.0,
+    # favorite-carry mode: buy the late favorite, sell into the run-up to ~1
+    "carry_enabled": 1.0,
+    "carry_s_lo": 30.0,
+    "carry_s_hi": 90.0,
+    "carry_ask_lo": 0.85,
+    "carry_ask_hi": 0.96,
+    "carry_min_model": 0.80,  # model must agree the favorite is likely
+    "carry_exit_bid": 0.99,
+    "carry_stop_model": 0.70,  # bail out when the model turns
+    "carry_stop_drop": 0.08,  # ...or when the bid falls this far below entry
+
     "reentry_cooldown_s": 1.0,
     "size_fraction": 1.0,
     "min_share_buffer": 1.15,
@@ -124,6 +137,9 @@ class Strategy:
         self.last_flat_at = -math.inf
         self.last_buy_at = -math.inf
         self.last_ref_t = -math.inf
+        self.mode: str | None = None  # "value" | "carry" for the open position
+        self.entry_px = 0.0
+        self.model_yes: float | None = None
 
     # ------------------------------------------------------------------
     def decide(self, obs: dict[str, Any]) -> dict[str, Any]:
@@ -192,10 +208,13 @@ class Strategy:
             self.cycles_here += 1
             self.last_flat_at = now
         self.had_position = position is not None
+        if position is None:
+            self.mode = None
 
         fair_yes = None
         if target is not None:
             fair_yes, _, _ = self.fv.prob_yes(now, end, target)
+            self.model_yes = fair_yes
             if fair_yes is not None:
                 fair_yes = self._blend(fair_yes, books)
 
@@ -242,6 +261,15 @@ class Strategy:
             # Blind: get out rather than carry unknown risk into the close.
             return {"action": "SELL"}
         fair = fair_yes if side == "YES" else 1.0 - fair_yes
+        if self.mode == "carry":
+            model = self.model_yes if side == "YES" else 1.0 - (self.model_yes or 0.0)
+            if bids[0][0] >= p["carry_exit_bid"]:
+                return {"action": "SELL"}
+            if model is not None and model < p["carry_stop_model"]:
+                return {"action": "SELL"}
+            if bids[0][0] <= self.entry_px - p["carry_stop_drop"]:
+                return {"action": "SELL"}
+            return {"action": "HOLD"}
         sale = plan_sell(bids, shares)
         if sale is None:
             # Not enough displayed depth for a full exit; sell what we can
@@ -252,6 +280,32 @@ class Strategy:
         if vwap >= fair - p["hold_margin"]:
             return {"action": "SELL"}
         return {"action": "HOLD"}
+
+    def _carry_entry(self, books, seconds, cap):
+        p = self.p
+        if not (p["carry_s_lo"] <= seconds <= p["carry_s_hi"]) or self.model_yes is None:
+            return None
+        for side in ("YES", "NO"):
+            book = books.get(side, {})
+            asks = _levels(book.get("asks", []), False)
+            bids = _levels(book.get("bids", []), True)
+            if not asks or not bids:
+                continue
+            ask = asks[0][0]
+            if not (p["carry_ask_lo"] <= ask <= p["carry_ask_hi"]):
+                continue
+            model = self.model_yes if side == "YES" else 1.0 - self.model_yes
+            if model < p["carry_min_model"]:
+                continue
+            mos = float(book.get("minOrderSize", 0) or 0)
+            plan = plan_buy(asks, cap, min(0.999, p["carry_ask_hi"] + 0.01))
+            if plan is None:
+                continue
+            shares, gross, fee = plan
+            if shares < max(mos, 0.01) * p["min_share_buffer"]:
+                continue
+            return side, gross + fee, gross / shares
+        return None
 
     def _entry(self, obs, books, seconds, fair_yes, now, account, rules):
         p = self.p
@@ -265,6 +319,14 @@ class Strategy:
         cap = min(float(rules.get("maximumBuyCashUsd", 5.0)), cash) * p["size_fraction"]
         cap = math.floor(cap * 1e4) / 1e4 - 0.0005
         if cap <= 0.05:
+            return {"action": "HOLD"}
+        carry = self._carry_entry(books, seconds, cap) if p["carry_enabled"] else None
+        if carry is not None:
+            self.last_buy_at = now
+            self.mode = "carry"
+            self.entry_px = carry[2]
+            return {"action": "BUY", "outcome": carry[0], "maxCashUsd": round(carry[1], 4)}
+        if not p["value_enabled"]:
             return {"action": "HOLD"}
         need = self._required_edge(now, account, rules)
         best = None
@@ -297,4 +359,5 @@ class Strategy:
         if best is None:
             return {"action": "HOLD"}
         self.last_buy_at = now
+        self.mode = "value"
         return {"action": "BUY", "outcome": best[1], "maxCashUsd": round(min(cap, best[2] * 1.0), 4)}
