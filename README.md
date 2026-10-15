@@ -39,7 +39,7 @@ python3 -m unittest discover -s tests -v
 Official smoke test (from the starter kit):
 
 ```bash
-python3 starter-kit/yeno-smoke-test.py --url http://127.0.0.1:8080/decide   # -> "contractSmokePassed": true
+cd starter-kit && python3 yeno-smoke-test.py --url http://127.0.0.1:8080/decide   # -> "contractSmokePassed": true
 ```
 
 Docker:
