@@ -24,7 +24,7 @@ research/            <- development tooling (not part of the submission)
   run_replay.py      replay recordings (in-process or over HTTP, 200 ms enforced)
   run_synth.py       parallel synthetic sessions, ours vs House Bot v1
   tune.py            random-search tuning (synthetic and replay modes)
-  calib_*.py, alpha_study.py, edge_scan.py, peek.py, diag.py   analysis
+  calib_*.py, alpha_study.py, fav_study.py, edge_scan.py, peek.py, diag.py   analysis
 ```
 
 ## Run it
@@ -39,7 +39,7 @@ python3 -m unittest discover -s tests -v
 Official smoke test (from the starter kit):
 
 ```bash
-python3 yeno-smoke-test.py --url http://127.0.0.1:8080/decide   # -> "contractSmokePassed": true
+python3 starter-kit/yeno-smoke-test.py --url http://127.0.0.1:8080/decide   # -> "contractSmokePassed": true
 ```
 
 Docker:
@@ -69,7 +69,7 @@ the window instead of `σ²·s`).
 - uses a fat-tailed CDF; reliability on 9,493 historical checkpoints is within a percent
   across all probability buckets.
 
-**3. Trading** (`strategy.py`)
+**3. Trading** (`strategy.py`): value mode plus favorite-carry mode, both on by default
 - blends the model with the book mid in logit space (`model_weight`) — the book is informative;
 - walks the ask ladder with both fee layers (`0.07·q·p(1−p)` + 1% overlay), a latency cushion
   for the 250 ms delay and the expected exit cost; buys only when expected edge per dollar
@@ -77,6 +77,11 @@ the window instead of `σ²·s`).
 - holds while the bid is below fair value, sells as soon as the market has caught up or moved
   against the position, and always flattens before the close so every cycle earns volume
   (settled positions earn none);
+- **carry mode** (checked first): with 30–90 s left, buys the favorite when its ask is
+  0.85–0.96 and the model gives it at least 0.80, then sells into the late run-up once the
+  bid reaches 0.99. It bails out if the model drops below 0.70 or the bid falls 0.08 under
+  entry. When behind the volume schedule it accepts favorites up to 0.97. Live recordings
+  show these late favorites are priced below their win rate (`research/fav_study.py`);
 - paces itself against the 1000 USD target: it lowers the edge bar when behind schedule and
   raises it when ahead, so cash is preserved without missing qualification;
 - never trades on stale or provisional reference data, never exceeds `min($5, cash)`,
@@ -96,5 +101,5 @@ the window instead of `σ²·s`).
 
 ## Results
 
-See [`RESULTS.md`](RESULTS.md) for synthetic and live-replay results and the parameter
-choice. These are development estimates, not official scores.
+See [`RESULTS.md`](RESULTS.md) for live-replay and synthetic results and why the shipped
+parameters were kept. These are development estimates, not official scores.
